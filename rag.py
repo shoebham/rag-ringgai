@@ -10,6 +10,8 @@ from langchain_community.document_loaders import (
     PyPDFLoader,
     Docx2txtLoader,
 )
+from weaviate.classes.query import MetadataQuery
+
 from weaviate.classes.config import Property, DataType
 from weaviate.classes.config import Configure
 
@@ -80,7 +82,7 @@ def store_in_db(documents, file_path):
         chunks = text_splitter.split_documents(documents=documents)
         
         for chunk in chunks:
-            print("chunk:",chunk)
+            
             embedding = get_embedding(chunk.page_content)
             metadata_str = json.dumps(chunk.metadata) if chunk.metadata else "{}"
 
@@ -158,12 +160,15 @@ def query_doc(query: Query, file_path: str):
         result = db.collections.get("Documents").query.near_vector(
             near_vector=query_embedding,
             limit=3,
-            additional_properties=["distance"]
+            return_metadata=MetadataQuery(distance=True)
         )
-        
+        contexts=[]
         if not result.objects is None and len(result.objects) > 0:
-            # Format the context from the retrieved documents
-            contexts = [obj.properties["content"] for obj in result.objects]
+            for obj in result.objects:
+                content = obj.properties["content"]
+                metadata = json.loads(obj.properties["metadata"] if obj.properties else {})
+                contexts.append(content)
+
             
             # Generate response using OpenAI
             try:
