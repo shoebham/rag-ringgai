@@ -7,10 +7,16 @@ import rag
 import tempfile
 import os
 from fastapi import HTTPException
+import shutil
 
 load_dotenv()
 
 app = FastAPI()
+
+# Create a directory for storing files if it doesn't exist
+UPLOAD_DIR = "files"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
 
 class Query(BaseModel):
     question: str
@@ -27,32 +33,32 @@ async def upload_doc(file:UploadFile):
     return {"filename":file.filename}
 
 @app.post("/qa")
-async def ask_question(query):
+async def ask_question(query:Query):
     return rag.query(query=query) 
 
 @app.post("/qa-doc")
 async def ask_question_doc(message: str, file: UploadFile):
     try:
-        # Create a temporary file to store the uploaded content
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_file:
+        # Save file to the upload directory
+        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as buffer:
             content = await file.read()
-            tmp_file.write(content)
-            tmp_file.flush()
-            
-            # Create query object
-            query_obj = Query(question=message)
-            
-            # Process the query with the document
-            response = rag.query_doc(query_obj, tmp_file.name)
-            
-        # Clean up the temporary file
-        os.unlink(tmp_file.name)
+            buffer.write(content)
+        
+        query_obj = Query(question=message)
+        response = rag.query_doc(query_obj, file_path)
+        
+        # Clean up: remove the file after processing
+        os.remove(file_path)
         
         if response is None:
             raise HTTPException(status_code=404, detail="No relevant information found")
             
-        return {"answer": response}
+        return response
     except Exception as e:
+        # Ensure file cleanup in case of errors
+        if os.path.exists(file_path):
+            os.remove(file_path)
         raise HTTPException(status_code=500, detail=str(e))
     
 if __name__ == "__main__":

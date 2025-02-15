@@ -11,6 +11,7 @@ from langchain_community.document_loaders import (
     Docx2txtLoader,
 )
 from weaviate.classes.query import MetadataQuery
+from weaviate.classes.query import Filter
 
 from weaviate.classes.config import Property, DataType
 from weaviate.classes.config import Configure
@@ -106,6 +107,9 @@ def store_in_db(documents, file_path):
         chunks = text_splitter.split_documents(documents=documents)
         logger.info(f"Split documents into {len(chunks)} chunks")
         
+        # Get just the filename instead of full path
+        filename = os.path.basename(file_path)
+        
         for i, chunk in enumerate(chunks, 1):
             logger.info(f"Processing chunk {i}/{len(chunks)}")
             embedding = get_embedding(chunk.page_content)
@@ -113,7 +117,7 @@ def store_in_db(documents, file_path):
             
             properties = {
                 "content": chunk.page_content,
-                "source": file_path,
+                "source": filename,  # Store just the filename
                 "metadata": metadata_str
             }
             
@@ -171,14 +175,14 @@ def query(query:Query):
     return completion.choices[0].message.content 
 
 
-def query_doc(query: Query, file_path: str):
+def query_doc(query: Query, file_path: str, limit: int = 1):
     try:
         logger.info(f"Starting query_doc for file: {file_path}")
-
+        
         doc_identifier = get_file_hash(file_path)
+        filename = os.path.basename(file_path)
         logger.info(f"Document hash: {doc_identifier}")
         
-        # Process document only if it hasn't been processed before
         if doc_identifier not in processed_documents:
             logger.info("Document not previously processed, starting processing...")
             process_new_document(file_path)
@@ -186,25 +190,30 @@ def query_doc(query: Query, file_path: str):
         else:
             logger.info("Document was previously processed, skipping processing step")
         
-        # Generate embedding for the query
         logger.info(f"Generating embedding for query: {query.question}")
         query_embedding = get_embedding(query.question)
         
-        # Search Weaviate for similar content
         logger.info("Searching Weaviate for similar content")
         result = db.collections.get("Documents").query.near_vector(
             near_vector=query_embedding,
-            limit=3,
-            return_metadata=MetadataQuery(distance=True)
+            limit=limit,
+            return_metadata=MetadataQuery(distance=True),
+            
+            filters=Filter.by_property("source").equal(filename)
+                            
         )
         
         contexts = []
+        metadata_list = []
         if not result.objects is None and len(result.objects) > 0:
-            logger.info(f"Found {len(result.objects)} relevant documents")
             for obj in result.objects:
                 content = obj.properties["content"]
-                metadata = json.loads(obj.properties["metadata"]) if obj.properties.get("metadata") else {}
+                metadata = {
+                    "source": filename,  # Use the clean filename
+                    "snippet": content[:200] + "..." if len(content) > 200 else content
+                }
                 contexts.append(content)
+                metadata_list.append(metadata)
             
             try:
                 logger.info("Generating response from OpenAI")
@@ -215,14 +224,25 @@ def query_doc(query: Query, file_path: str):
                         {"role": "user", "content": f"Context: {' '.join(contexts)}\n\nQuestion: {query.question}"}
                     ]
                 )
-                logger.info("Successfully generated response from OpenAI")
-                return response.choices[0].message.content
+                
+                return {
+                    "answer": response.choices[0].message.content,
+                    "metadata": {
+                        "sources": metadata_list,
+                        "total_sources": len(metadata_list)
+                    }
+                }
             except Exception as e:
                 logger.error(f"Error generating response from OpenAI: {str(e)}")
                 raise Exception(f"Error generating response from OpenAI: {str(e)}")
         
-        logger.info("No relevant information found in the document")
-        return "No relevant information found in the document."
+        return {
+            "answer": "No relevant information found in the document.",
+            "metadata": {
+                "sources": [],
+                "total_sources": 0
+            }
+        }
     
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
