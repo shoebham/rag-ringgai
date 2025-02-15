@@ -8,6 +8,7 @@ import tempfile
 import os
 from fastapi import HTTPException
 import shutil
+from schemas import Query
 
 load_dotenv()
 
@@ -26,9 +27,6 @@ UPLOAD_DIR = "files"
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
 
-class Query(BaseModel):
-    question: str
-    context: Optional[Dict] = None
 
 
 @app.get("/health")
