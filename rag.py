@@ -18,6 +18,8 @@ from weaviate.classes.config import Configure
 
 import logging
 import hashlib
+from functools import lru_cache
+from typing import Dict, List
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,15 +42,20 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 processed_documents = set()
 
+# Cache for document chunks
+chunk_cache: Dict[str, List[dict]] = {}
+
 def get_file_hash(file_path: str) -> str:
     """Generate hash from file content"""
     with open(file_path, 'rb') as f:
         content = f.read()
         return hashlib.md5(content).hexdigest()
 
-def get_embedding(text, model="text-embedding-3-small"):
+@lru_cache(maxsize=1000)
+def get_embedding(text: str, model: str = "text-embedding-3-small") -> List[float]:
+    """Cache embeddings to avoid recomputing them"""
     text = text.replace("\n", " ")
-    return llm.embeddings.create(input = [text], model=model).data[0].embedding
+    return llm.embeddings.create(input=[text], model=model).data[0].embedding
 
 
 def process_new_document(file_path: str):
@@ -104,10 +111,19 @@ def ingest_documents(file_path: str):
 def store_in_db(documents, file_path):
     try:
         logger.info("Starting to store documents in database")
-        chunks = text_splitter.split_documents(documents=documents)
-        logger.info(f"Split documents into {len(chunks)} chunks")
+        doc_hash = get_file_hash(file_path)
         
-        # Get just the filename instead of full path
+        # Check if chunks are already cached
+        if doc_hash in chunk_cache:
+            logger.info("Using cached chunks")
+            chunks = chunk_cache[doc_hash]
+        else:
+            logger.info("Splitting document into chunks")
+            chunks = text_splitter.split_documents(documents=documents)
+            # Cache the chunks
+            chunk_cache[doc_hash] = chunks
+            
+        logger.info(f"Split documents into {len(chunks)} chunks")
         filename = os.path.basename(file_path)
         
         for i, chunk in enumerate(chunks, 1):
@@ -117,7 +133,7 @@ def store_in_db(documents, file_path):
             
             properties = {
                 "content": chunk.page_content,
-                "source": filename,  # Store just the filename
+                "source": filename,
                 "metadata": metadata_str
             }
             
@@ -157,6 +173,9 @@ def setup_weaviate_schema():
 import atexit
 
 def cleanup():
+    """Clear caches and close connections"""
+    chunk_cache.clear()
+    get_embedding.cache_clear()
     db.close()
 
 atexit.register(cleanup)
