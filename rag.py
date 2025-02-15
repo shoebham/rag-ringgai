@@ -15,6 +15,12 @@ from weaviate.classes.query import MetadataQuery
 from weaviate.classes.config import Property, DataType
 from weaviate.classes.config import Configure
 
+import logging
+import hashlib
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 llm = OpenAI()
 model = "gpt-4o-mini"
 # Best practice: store your credentials in environment variables
@@ -33,6 +39,11 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 processed_documents = set()
 
+def get_file_hash(file_path: str) -> str:
+    """Generate hash from file content"""
+    with open(file_path, 'rb') as f:
+        content = f.read()
+        return hashlib.md5(content).hexdigest()
 
 def get_embedding(text, model="text-embedding-3-small"):
     text = text.replace("\n", " ")
@@ -41,25 +52,33 @@ def get_embedding(text, model="text-embedding-3-small"):
 
 def process_new_document(file_path: str):
     try:
+        logger.info(f"Starting to process new document: {file_path}")
         file_stats = os.stat(file_path)
         doc_identifier = f"{file_path}_{file_stats.st_mtime}"
         
         if doc_identifier in processed_documents:
+            logger.info(f"Document already processed: {file_path}")
             return f"Document already processed: {file_path}"
         
+        logger.info("Starting document ingestion")
         num_chunks = ingest_documents(file_path)
         processed_documents.add(doc_identifier)
+        logger.info(f"Successfully processed document: {file_path}. Created {num_chunks} chunks")
         return f"Successfully processed document: {file_path}. Created {num_chunks} chunks."
     
     except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
         raise Exception(f"File not found: {file_path}")
     except Exception as e:
+        logger.error(f"Error processing document: {str(e)}")
         raise Exception(f"Error processing document: {str(e)}")
     
 
 def ingest_documents(file_path: str):
     try:
+        logger.info(f"Starting document ingestion for: {file_path}")
         _, ext = os.path.splitext(file_path)
+        logger.info(f"Detected file extension: {ext}")
         
         if ext == ".txt":
             loader = TextLoader(file_path)
@@ -68,24 +87,30 @@ def ingest_documents(file_path: str):
         elif ext == ".docx":
             loader = Docx2txtLoader(file_path)
         else:
+            logger.error(f"Unsupported file type: {ext}")
             raise ValueError(f"Unsupported file type: {ext}")
         
+        logger.info("Loading document")
         documents = loader.load()
+        logger.info("Document loaded successfully, storing in database")
         return store_in_db(documents=documents, file_path=file_path)
     
     except Exception as e:
+        logger.error(f"Error ingesting document: {str(e)}")
         raise Exception(f"Error ingesting document: {str(e)}")
 
 
 def store_in_db(documents, file_path):
     try:
+        logger.info("Starting to store documents in database")
         chunks = text_splitter.split_documents(documents=documents)
+        logger.info(f"Split documents into {len(chunks)} chunks")
         
-        for chunk in chunks:
-            
+        for i, chunk in enumerate(chunks, 1):
+            logger.info(f"Processing chunk {i}/{len(chunks)}")
             embedding = get_embedding(chunk.page_content)
             metadata_str = json.dumps(chunk.metadata) if chunk.metadata else "{}"
-
+            
             properties = {
                 "content": chunk.page_content,
                 "source": file_path,
@@ -97,8 +122,10 @@ def store_in_db(documents, file_path):
                 vector=embedding
             )
         
+        logger.info(f"Successfully stored {len(chunks)} chunks in database")
         return len(chunks)
     except Exception as e:
+        logger.error(f"Error storing documents in database: {str(e)}")
         raise Exception(f"Error storing documents in database: {str(e)}")
 
 def setup_weaviate_schema():
@@ -146,32 +173,41 @@ def query(query:Query):
 
 def query_doc(query: Query, file_path: str):
     try:
-        # Check if document needs processing
-        file_stats = os.stat(file_path)
-        doc_identifier = f"{file_path}_{file_stats.st_mtime}"
+        logger.info(f"Starting query_doc for file: {file_path}")
+
+        doc_identifier = get_file_hash(file_path)
+        logger.info(f"Document hash: {doc_identifier}")
         
+        # Process document only if it hasn't been processed before
         if doc_identifier not in processed_documents:
+            logger.info("Document not previously processed, starting processing...")
             process_new_document(file_path)
+            processed_documents.add(doc_identifier)
+        else:
+            logger.info("Document was previously processed, skipping processing step")
         
         # Generate embedding for the query
+        logger.info(f"Generating embedding for query: {query.question}")
         query_embedding = get_embedding(query.question)
         
         # Search Weaviate for similar content
+        logger.info("Searching Weaviate for similar content")
         result = db.collections.get("Documents").query.near_vector(
             near_vector=query_embedding,
             limit=3,
             return_metadata=MetadataQuery(distance=True)
         )
-        contexts=[]
+        
+        contexts = []
         if not result.objects is None and len(result.objects) > 0:
+            logger.info(f"Found {len(result.objects)} relevant documents")
             for obj in result.objects:
                 content = obj.properties["content"]
-                metadata = json.loads(obj.properties["metadata"] if obj.properties else {})
+                metadata = json.loads(obj.properties["metadata"]) if obj.properties.get("metadata") else {}
                 contexts.append(content)
-
             
-            # Generate response using OpenAI
             try:
+                logger.info("Generating response from OpenAI")
                 response = llm.chat.completions.create(
                     model=model,
                     messages=[
@@ -179,15 +215,17 @@ def query_doc(query: Query, file_path: str):
                         {"role": "user", "content": f"Context: {' '.join(contexts)}\n\nQuestion: {query.question}"}
                     ]
                 )
+                logger.info("Successfully generated response from OpenAI")
                 return response.choices[0].message.content
             except Exception as e:
+                logger.error(f"Error generating response from OpenAI: {str(e)}")
                 raise Exception(f"Error generating response from OpenAI: {str(e)}")
         
+        logger.info("No relevant information found in the document")
         return "No relevant information found in the document."
     
-    except FileNotFoundError:
-        raise Exception(f"File not found: {file_path}")
     except Exception as e:
+        logger.error(f"Error processing query: {str(e)}")
         raise Exception(f"Error processing query: {str(e)}")
 
 
