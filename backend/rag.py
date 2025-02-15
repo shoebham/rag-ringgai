@@ -1,6 +1,7 @@
 import json
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from openai import OpenAI
+from schemas import Query
 import os
 import weaviate
 from weaviate.classes.init import Auth
