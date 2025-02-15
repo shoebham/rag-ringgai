@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+openai
+weaviate-client
+python-dotenv
+langchain
+langchain-community
+langchain-text-splitters
