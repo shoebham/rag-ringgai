@@ -1,2 +1,5 @@
 files/
 .env
+backend/venv/
+frontend/venv/
+*/__pycache__/

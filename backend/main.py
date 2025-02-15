@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, File, UploadFile
 from typing import Dict, Optional
 from dotenv import load_dotenv
-import backend.rag as rag
+import rag as rag
 import tempfile
 import os
 from fastapi import HTTPException
@@ -34,7 +34,7 @@ class Query(BaseModel):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-    
+
 @app.get("/")
 def root():
     return {"Hello": "World"}
